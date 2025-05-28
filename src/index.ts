@@ -4,10 +4,10 @@ import { Server } from "socket.io";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
-
 import registerSocketHandlers from "./socketHandlers";
 import recordingsRoutes from "./routes/recording";
-
+import dotenv from "dotenv";
+dotenv.config();
 const OUTPUT_DIR = "uploads";
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR);
 
@@ -33,7 +33,7 @@ app.get("/live-streams", (req, res) => {
 });
 
 // Socket logic
-registerSocketHandlers(io, liveStreams, OUTPUT_DIR);
+registerSocketHandlers(io, liveStreams);
 
 server.listen(4000, () => {
   console.log("🚀 Server running on http://localhost:4000");

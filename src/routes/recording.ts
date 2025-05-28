@@ -1,46 +1,55 @@
 import express from "express";
-import fs from "fs";
-import path from "path";
+import { v2 as cloudinary } from "cloudinary";
 
 const router = express.Router();
-const OUTPUT_DIR = "uploads";
 
+
+
+// GET /recordings – List all videos in Cloudinary folder
 router.get("/", async (req, res) => {
   try {
-    const files = await fs.promises.readdir(OUTPUT_DIR);
-    const webmFiles = files.filter(f => f.endsWith(".webm"));
+    // Cloudinary configuration
+    cloudinary.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SEC,
+    });
+    const result = await cloudinary.search
+      .expression("resource_type:video AND folder:live_recordings")
+      .sort_by("created_at", "desc")
+      .max_results(50)
+      .execute();
 
-    const data = await Promise.all(
-      webmFiles.map(async (filename) => {
-        const stat = await fs.promises.stat(path.join(OUTPUT_DIR, filename));
-        const match = filename.match(/_(\d+)\.webm$/);
-        const timestamp = match ? parseInt(match[1]) : Date.now();
+    const recordings = result.resources.map((video: any) => {
+      const timestamp = new Date(video.created_at).getTime();
 
-        return {
-          filename,
-          size: stat.size,
-          timestamp,
-          url: `/recordings/${filename}`
-        };
-      })
-    );
+      return {
+        filename: video.public_id.split("/").pop() + ".webm", // simulate old naming
+        size: video.bytes,
+        duration: video.duration,
+        timestamp,
+        url: video.secure_url
+      };
+    });
 
-    res.json({ recordings: data });
+    res.json({ recordings });
   } catch (err) {
-    console.error("Error reading recordings:", err);
-    res.status(500).json({ error: "Unable to read recordings" });
+    console.error("Error fetching recordings from Cloudinary:", err);
+    res.status(500).json({ error: "Unable to fetch recordings" });
   }
 });
 
-router.get("/:filename", (req, res):any => {
-  const filePath = path.join(OUTPUT_DIR, req.params.filename);
-  if (!fs.existsSync(filePath)) {
+// GET /recordings/:filename – Redirect to Cloudinary file
+router.get("/:filename", async (req, res): Promise<any> => {
+  const publicId = `live_recordings/${req.params.filename.replace(/\.webm$/, "")}`;
+
+  try {
+    const result = await cloudinary.api.resource(publicId, { resource_type: "video" });
+    return res.redirect(result.secure_url);
+  } catch (err) {
+    console.error("Error fetching video:", err);
     return res.status(404).json({ error: "Recording not found" });
   }
-
-  res.setHeader("Content-Type", "video/webm");
-  res.setHeader("Content-Disposition", `inline; filename="${req.params.filename}"`);
-  fs.createReadStream(filePath).pipe(res);
 });
 
 export default router;
