@@ -4,10 +4,11 @@ import streamifier from "streamifier";
 
 
 interface RecordingState {
-    chunks: any[];
+    chunks: Buffer[];
     filename: string;
     startTime: number;
     chunkCount: number;
+    initialHeader: Buffer | null;
 }
 
 export default function registerSocketHandlers(
@@ -40,21 +41,32 @@ export default function registerSocketHandlers(
                 chunks: [],
                 filename,
                 startTime: timestamp,
-                chunkCount: 0
+                chunkCount: 0,
+                initialHeader: null
             };
 
             console.log(`▶️ Started recording for ${socket.id}`);
         });
 
-        socket.on("video-chunk", (chunk: Buffer) => {
+        socket.on("video-chunk", (chunk: Buffer, isInitial: boolean) => {
             const recording = recordings[socket.id];
-            if (!recording) return;
+            if (!recording) {
+                console.log(`❌ No recording state for ${socket.id}, ignoring chunk.`);
+                return;
+            }
 
             const buffer = Buffer.from(chunk);
-            recording.chunkCount++;
-            
             const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-            // recording.chunks.push(arrayBuffer);
+
+            if (isInitial && !recording.initialHeader) {
+                recording.initialHeader = buffer;
+                console.log(`✅ Received initial header for ${socket.id}. Size: ${buffer.byteLength}`);
+            } else {
+                recording.chunks.push(buffer);
+                console.log(`➡️ Received media chunk for ${socket.id}. Size: ${buffer.byteLength}. Total chunks: ${recording.chunks.length}`);
+            }
+            recording.chunkCount++;
+
             io.to(socket.id).emit("live-stream-video-chunk", arrayBuffer);
         });
 
@@ -62,7 +74,13 @@ export default function registerSocketHandlers(
             const recording = recordings[socket.id];
             if (!recording) return;
 
-            const videoBuffer = Buffer.concat(recording.chunks);
+            console.log("recording-stopped saving the file to cloudinary. It will take 1 moment")
+            let buffers: Buffer[] = [];
+            if (recording.initialHeader) {
+                buffers.push(recording.initialHeader);
+            }
+            buffers = buffers.concat(recording.chunks);
+            const videoBuffer = Buffer.concat(buffers);
 
             const uploadStream = cloudinary.uploader.upload_stream(
                 {
@@ -71,11 +89,12 @@ export default function registerSocketHandlers(
                 },
                 (error, result) => {
                     if (error) {
-                        console.error("❌ Cloudinary upload error:", error);
-                        socket.emit("recording-error", { message: error.message || "Upload failed" });
+                        console.error("❌ cloudinary upload error:", error);
+                        socket.emit("cloudinary-failed", "Failed to save the file on cloudinary");
+
                         return;
                     }
-
+                    console.log(`✅ Uploaded to Cloudinary: ${result?.secure_url}`);
                     const duration = (Date.now() - recording.startTime) / 1000;
 
                     socket.emit("recording-saved", {
@@ -85,10 +104,7 @@ export default function registerSocketHandlers(
                         duration
                     });
 
-                    console.log(`✅ Uploaded to Cloudinary: ${result?.secure_url}`);
 
-                    // Clean after successful upload
-                    delete recordings[socket.id];
                 }
             );
 
@@ -98,13 +114,18 @@ export default function registerSocketHandlers(
 
         socket.on("join-room", (streamId) => {
             socket.join(streamId);
-            const recording = recordings[streamId];
-            if (recording) {
-                console.log(`📦 Sending ${recording.chunkCount} past chunks to ${socket.id}`);
-                for (const chunk of recording.chunks) {
-                    socket.emit("live-stream-video-chunk", chunk);
-                }
-            }
+            // const recording = recordings[streamId];
+            // if (recording) {
+            //     if (recording.initialHeader) {
+            //         socket.emit("live-stream-video-chunk", recording.initialHeader);
+            //     } else {
+            //         console.warn(`⚠️ No initial header found for stream ${streamId}`);
+            //     }
+            //     console.log(`📦 Sending ${recording.chunkCount} past chunks to ${socket.id}`);
+            //     for (const chunk of recording.chunks) {
+            //         socket.emit("live-stream-video-chunk", chunk);
+            //     }
+            // }
         });
 
         socket.on("stream-chat", ({ streamId, message }) => {
