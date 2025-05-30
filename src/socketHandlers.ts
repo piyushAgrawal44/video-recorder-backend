@@ -55,19 +55,39 @@ export default function registerSocketHandlers(
                 return;
             }
 
+            // Validate chunk
+            if (!chunk || chunk.byteLength === 0) {
+                console.log(`❌ Invalid chunk received for ${socket.id}`);
+                return;
+            }
+
             const buffer = Buffer.from(chunk);
-            const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 
             if (isInitial && !recording.initialHeader) {
                 recording.initialHeader = buffer;
                 console.log(`✅ Received initial header for ${socket.id}. Size: ${buffer.byteLength}`);
-            } else {
+            } else if (!isInitial) { // Only add non-initial chunks
                 recording.chunks.push(buffer);
                 console.log(`➡️ Received media chunk for ${socket.id}. Size: ${buffer.byteLength}. Total chunks: ${recording.chunks.length}`);
             }
+
             recording.chunkCount++;
 
-            io.to(socket.id).emit("live-stream-video-chunk", arrayBuffer);
+            // Build complete buffer AFTER adding the new chunk
+            let buffers: Buffer[] = [];
+            if (recording.initialHeader) {
+                buffers.push(recording.initialHeader);
+            }
+            buffers = buffers.concat(recording.chunks);
+            const videoBuffer = Buffer.concat(buffers);
+            const completeBuffer = videoBuffer.buffer.slice(videoBuffer.byteOffset, videoBuffer.byteOffset + videoBuffer.byteLength);
+
+            const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+
+            io.to(socket.id).emit("live-stream-video-chunk", {
+                currentChunk: arrayBuffer,
+                completeChunk: completeBuffer
+            });
         });
 
         socket.on("recording-stopped", () => {
@@ -114,18 +134,6 @@ export default function registerSocketHandlers(
 
         socket.on("join-room", (streamId) => {
             socket.join(streamId);
-            // const recording = recordings[streamId];
-            // if (recording) {
-            //     if (recording.initialHeader) {
-            //         socket.emit("live-stream-video-chunk", recording.initialHeader);
-            //     } else {
-            //         console.warn(`⚠️ No initial header found for stream ${streamId}`);
-            //     }
-            //     console.log(`📦 Sending ${recording.chunkCount} past chunks to ${socket.id}`);
-            //     for (const chunk of recording.chunks) {
-            //         socket.emit("live-stream-video-chunk", chunk);
-            //     }
-            // }
         });
 
         socket.on("stream-chat", ({ streamId, message }) => {
